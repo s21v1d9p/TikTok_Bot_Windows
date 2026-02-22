@@ -654,24 +654,58 @@ class TikTokBot:
     def login_manual(self) -> None:
         """First-run login flow.
 
-        Opens TikTok login page so the user can scan the QR code or
-        log in manually.  Once authenticated, cookies are saved to
-        COOKIES_PATH for all future runs.
+        Opens TikTok HOMEPAGE (NOT /login) so the user can click the
+        native "Log in" button and scan the QR code.  Navigating to
+        /login directly triggers TikTok's aggressive rate-limiter
+        ("Maximum number of attempts reached") after a few tries.
+
+        Once authenticated, cookies are saved to COOKIES_PATH for all
+        future runs.
         """
         logger.info("=== MANUAL LOGIN MODE ===")
         self._launch_browser(headless=False)
 
-        self.page.goto(TIKTOK_LOGIN, wait_until="domcontentloaded")
+        # Navigate to HOMEPAGE — avoids /login rate-limit
+        self.page.goto(TIKTOK_BASE, wait_until="domcontentloaded")
         random_sleep(*DELAY_MEDIUM)
 
+        # Detect "Maximum number of attempts" rate-limit text
+        try:
+            page_text = self.page.inner_text("body", timeout=5000).lower()
+            if "maximum number of attempts" in page_text:
+                logger.warning(
+                    "TikTok rate-limit detected ('Maximum number of attempts'). "
+                    "Clearing cookies and retrying from a clean state …"
+                )
+                # Clear all cookies/storage to reset rate-limit tracking
+                try:
+                    self.context.clear_cookies()
+                except Exception:
+                    pass
+                random_sleep(5.0, 10.0)
+                self.page.goto(TIKTOK_BASE, wait_until="domcontentloaded")
+                random_sleep(*DELAY_MEDIUM)
+
+                # Re-check
+                page_text2 = self.page.inner_text("body", timeout=5000).lower()
+                if "maximum number of attempts" in page_text2:
+                    logger.error(
+                        "Rate-limit persists after cookie clear — this is an "
+                        "IP-level block.  Please wait 15-30 minutes or switch "
+                        "to a different network/VPN, then try again."
+                    )
+        except Exception:
+            pass
+
         logger.info(
-            "Please log in manually (QR code / credentials). "
-            "The bot will wait up to 180 seconds …"
+            "Please click the 'Log in' button on the TikTok page, "
+            "then scan the QR code or enter credentials. "
+            "The bot will wait up to 300 seconds …"
         )
 
         # Poll for logged-in state using POSITIVE detection
         logged_in = False
-        for attempt in range(180):
+        for attempt in range(300):
             if self._check_logged_in():
                 logged_in = True
                 break
@@ -681,7 +715,7 @@ class TikTokBot:
 
         if not logged_in:
             logger.warning(
-                "Login not detected after 180 s. Saving cookies anyway – "
+                "Login not detected after 300 s. Saving cookies anyway – "
                 "you may need to re-run if they are invalid."
             )
 
