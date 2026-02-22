@@ -652,58 +652,130 @@ class TikTokBot:
     # Authentication
     # ──────────────────────────────────────────
     def login_manual(self) -> None:
-        """First-run login flow.
+        """First-run login flow via QR code.
 
-        Opens TikTok HOMEPAGE (NOT /login) so the user can click the
-        native "Log in" button and scan the QR code.  Navigating to
-        /login directly triggers TikTok's aggressive rate-limiter
-        ("Maximum number of attempts reached") after a few tries.
+        Strategy:
+        1. Open TikTok homepage
+        2. Click the "Log in" button to open the login modal
+        3. Navigate to QR code login (avoids email/password rate-limiter)
+        4. Wait for user to scan QR code with their phone
+        5. Save cookies once authenticated
 
-        Once authenticated, cookies are saved to COOKIES_PATH for all
-        future runs.
+        QR code login bypasses the "Maximum number of attempts reached"
+        error that TikTok's email/password endpoint triggers.
         """
-        logger.info("=== MANUAL LOGIN MODE ===")
+        logger.info("=== MANUAL LOGIN MODE (QR Code) ===")
         self._launch_browser(headless=False)
 
-        # Navigate to HOMEPAGE — avoids /login rate-limit
+        # ── Step 1: Navigate to homepage ──
         self.page.goto(TIKTOK_BASE, wait_until="domcontentloaded")
         random_sleep(*DELAY_MEDIUM)
 
-        # Detect "Maximum number of attempts" rate-limit text
+        # ── Step 2: Click "Log in" button to open the login modal ──
+        logger.info("Clicking 'Log in' button …")
+        login_clicked = False
+        for login_sel in [
+            '[data-e2e="top-login-button"]',
+            'button:has-text("Log in")',
+            'a:has-text("Log in")',
+            '[data-e2e="login-button"]',
+        ]:
+            try:
+                btn = self.page.locator(login_sel).first
+                if btn.is_visible(timeout=3000):
+                    btn.click(timeout=5000)
+                    login_clicked = True
+                    logger.info("Login button clicked via: %s", login_sel)
+                    break
+            except Exception:
+                continue
+
+        if not login_clicked:
+            logger.warning("Could not find Login button — navigating to /login/qrcode directly.")
+
+        random_sleep(2.0, 4.0)
+
+        # ── Step 3: Navigate to QR code login ──
+        # Try clicking "Use QR code" or "Log in with QR code" if visible
+        qr_clicked = False
+        for qr_sel in [
+            'a:has-text("QR")',
+            ':has-text("Use QR code")',
+            ':has-text("Log in with QR")',
+            'a[href*="qrcode"]',
+            '[data-e2e="qrcode-login"]',
+            # Direct link in the login modal
+            'div[role="dialog"] a:has-text("QR")',
+        ]:
+            try:
+                qr_btn = self.page.locator(qr_sel).first
+                if qr_btn.is_visible(timeout=2000):
+                    qr_btn.click(timeout=5000)
+                    qr_clicked = True
+                    logger.info("QR code option clicked via: %s", qr_sel)
+                    break
+            except Exception:
+                continue
+
+        if not qr_clicked:
+            # Fallback: navigate directly to the QR code login page
+            logger.info("Navigating directly to QR code login page …")
+            try:
+                self.page.goto(
+                    f"{TIKTOK_BASE}/login/qrcode",
+                    wait_until="domcontentloaded",
+                    timeout=30000,
+                )
+            except Exception:
+                # Some regions redirect — just go to /login and look for QR
+                try:
+                    self.page.goto(
+                        TIKTOK_LOGIN,
+                        wait_until="domcontentloaded",
+                        timeout=30000,
+                    )
+                except Exception:
+                    pass
+
+        random_sleep(2.0, 4.0)
+
+        # ── Step 4: Detect rate-limit on this page too ──
         try:
-            page_text = self.page.inner_text("body", timeout=5000).lower()
+            page_text = self.page.inner_text("body", timeout=3000).lower()
             if "maximum number of attempts" in page_text:
                 logger.warning(
-                    "TikTok rate-limit detected ('Maximum number of attempts'). "
-                    "Clearing cookies and retrying from a clean state …"
+                    "Rate-limit detected. Clearing cookies and retrying …"
                 )
-                # Clear all cookies/storage to reset rate-limit tracking
                 try:
                     self.context.clear_cookies()
                 except Exception:
                     pass
                 random_sleep(5.0, 10.0)
-                self.page.goto(TIKTOK_BASE, wait_until="domcontentloaded")
+                self.page.goto(
+                    f"{TIKTOK_BASE}/login/qrcode",
+                    wait_until="domcontentloaded",
+                )
                 random_sleep(*DELAY_MEDIUM)
-
-                # Re-check
-                page_text2 = self.page.inner_text("body", timeout=5000).lower()
-                if "maximum number of attempts" in page_text2:
-                    logger.error(
-                        "Rate-limit persists after cookie clear — this is an "
-                        "IP-level block.  Please wait 15-30 minutes or switch "
-                        "to a different network/VPN, then try again."
-                    )
         except Exception:
             pass
 
         logger.info(
-            "Please click the 'Log in' button on the TikTok page, "
-            "then scan the QR code or enter credentials. "
-            "The bot will wait up to 300 seconds …"
+            "=== QR CODE LOGIN ===\n"
+            "  Open TikTok on your PHONE → tap your profile →\n"
+            "  tap the ☰ menu → 'Settings and privacy' →\n"
+            "  'QR code' → scan the code on screen.\n"
+            "  The bot will wait up to 300 seconds …"
+        )
+        print(
+            "\n  ╔══════════════════════════════════════════════╗\n"
+            "  ║  SCAN THE QR CODE with your TikTok app!     ║\n"
+            "  ║                                              ║\n"
+            "  ║  Phone → Profile → ☰ → Settings → QR code   ║\n"
+            "  ║  Then scan the code shown in the browser.    ║\n"
+            "  ╚══════════════════════════════════════════════╝\n"
         )
 
-        # Poll for logged-in state using POSITIVE detection
+        # ── Step 5: Poll for logged-in state ──
         logged_in = False
         for attempt in range(300):
             if self._check_logged_in():
@@ -802,50 +874,99 @@ class TikTokBot:
         return False
 
     def _check_logged_in(self) -> bool:
-        """Return True if positive logged-in indicators are found.
+        """Return True ONLY if we are confident the user is logged in.
 
-        Detection priority (strictest first):
-        1. JS text scan: if visible "Log in" text exists → NOT logged in.
-        2. CSS logged-out selectors → NOT logged in.
-        3. CSS logged-in selectors → logged in.
+        This is the CRITICAL gate — a false positive here means the bot
+        runs actions on a logged-out page, which wastes the session and
+        can trigger TikTok's bot detection.
+
+        Strategy (belt-and-suspenders):
+        1. Wait for page to settle (DOM must have content).
+        2. JS scan: if ANY visible element contains 'Log in' text → False.
+        3. CSS logged-out selectors with generous timeout → False.
+        4. Cookie check: if no 'sessionid' cookie → False.
+        5. CSS logged-in selectors → True.
+        6. Default → False (safer to assume logged out).
         """
-        # ── 1. Strongest gate: JS check for visible "Log in" text ──
+        # ── 0. Wait for page to actually have content ──
+        try:
+            self.page.wait_for_load_state("domcontentloaded", timeout=10000)
+        except Exception:
+            pass
+        # Give TikTok's SPA a moment to render the nav elements
+        time.sleep(1.5)
+
+        # ── 1. JS scan for any visible "Log in" text (broadest check) ──
         try:
             has_login_text = self.page.evaluate("""() => {
-                // Look for visible elements whose text is "Log in" (exact or near-exact)
-                const els = document.querySelectorAll('a, button, div[role="button"]');
-                for (const el of els) {
-                    const text = (el.textContent || '').trim();
-                    if (text === 'Log in' && el.offsetParent !== null) {
-                        return true;
+                // Walk ALL elements — TikTok renders Login in various ways
+                const walker = document.createTreeWalker(
+                    document.body, NodeFilter.SHOW_ELEMENT, null
+                );
+                let node;
+                while (node = walker.nextNode()) {
+                    // Skip invisible elements
+                    if (node.offsetParent === null && node.tagName !== 'BODY') continue;
+                    // Check direct text content (not children)
+                    for (const child of node.childNodes) {
+                        if (child.nodeType === 3) {  // TEXT_NODE
+                            const text = child.textContent.trim();
+                            if (text === 'Log in' || text === 'Login') {
+                                return true;
+                            }
+                        }
                     }
                 }
                 return false;
             }""")
             if has_login_text:
-                logger.debug("Logged-out: JS detected visible 'Log in' element.")
+                logger.info("Login check: NEGATIVE (JS found visible 'Log in' text)")
                 return False
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("JS login text check error: %s", e)
 
-        # ── 2. CSS logged-out selectors ──
+        # ── 2. CSS logged-out selectors (generous 3s timeout) ──
         for sel in SELECTORS["logged_out_indicators"]:
             try:
-                if element_exists(self.page, sel, timeout=800):
-                    logger.debug("Logged-out indicator found: %s", sel)
+                if element_exists(self.page, sel, timeout=3000):
+                    logger.info("Login check: NEGATIVE (logged-out selector: %s)", sel)
                     return False
             except Exception:
                 pass
 
-        # ── 3. CSS logged-in selectors ──
+        # ── 3. Cookie-level check: sessionid must exist ──
+        if not self._has_session_cookie():
+            logger.info("Login check: NEGATIVE (no sessionid cookie found)")
+            return False
+
+        # ── 4. CSS logged-in selectors ──
         for selector in SELECTORS["logged_in_indicators"]:
             try:
-                if element_exists(self.page, selector, timeout=1500):
-                    logger.info("Logged-in indicator found: %s", selector)
+                if element_exists(self.page, selector, timeout=3000):
+                    logger.info("Login check: POSITIVE (logged-in selector: %s)", selector)
                     return True
             except Exception:
                 continue
 
+        # ── 5. Default: assume NOT logged in (safe default) ──
+        logger.info("Login check: NEGATIVE (no positive indicators found)")
+        return False
+
+    def _has_session_cookie(self) -> bool:
+        """Check if the browser context has a TikTok session cookie.
+
+        This is the most reliable login check — if there's no sessionid
+        cookie, the user is definitely NOT logged in, regardless of what
+        the page UI shows.
+        """
+        try:
+            cookies = self.context.cookies(["https://www.tiktok.com"])
+            session_names = {"sessionid", "sid_tt", "sessionid_ss"}
+            for c in cookies:
+                if c.get("name") in session_names and c.get("value"):
+                    return True
+        except Exception as e:
+            logger.debug("Cookie check error: %s", e)
         return False
 
     def _save_cookies(self) -> None:
@@ -2004,6 +2125,16 @@ class TikTokBot:
         """
         wait_until_active()
         logger.info("========== SESSION START ==========")
+
+        # ── CRITICAL: Re-verify login before doing ANYTHING ──
+        if not self._check_logged_in():
+            logger.error(
+                "SESSION ABORTED: Not logged in! "
+                "The session cookie may have expired mid-run. "
+                "Please re-login with option [2]."
+            )
+            return
+        logger.info("Session login verified — proceeding with tasks.")
 
         # Reset per-session counters
         self._follows_this_session = 0
