@@ -822,9 +822,39 @@ class TikTokBot:
 
     def _load_cookies(self) -> None:
         with open(COOKIES_PATH, "r", encoding="utf-8") as fh:
-            cookies = json.load(fh)
-        self.context.add_cookies(cookies)
-        logger.info("Loaded %d cookies from disk.", len(cookies))
+            raw_cookies = json.load(fh)
+
+        # Sanitise: browser-extension exports use different field names
+        # and include keys that Playwright rejects.
+        ALLOWED_KEYS = {"name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite"}
+        SAME_SITE_MAP = {"no_restriction": "None", "lax": "Lax", "strict": "Strict",
+                         "none": "None", "unspecified": "Lax"}
+        cleaned = []
+        for raw in raw_cookies:
+            c: dict = {}
+            c["name"] = raw.get("name", "")
+            c["value"] = raw.get("value", "")
+            c["domain"] = raw.get("domain", "")
+            c["path"] = raw.get("path", "/")
+            c["httpOnly"] = bool(raw.get("httpOnly", False))
+            c["secure"] = bool(raw.get("secure", False))
+
+            # expirationDate (extension) → expires (Playwright)
+            exp = raw.get("expires", raw.get("expirationDate"))
+            if exp is not None:
+                c["expires"] = float(exp)
+            else:
+                c["expires"] = -1  # session cookie
+
+            # Normalise sameSite
+            ss = str(raw.get("sameSite", "Lax")).lower()
+            c["sameSite"] = SAME_SITE_MAP.get(ss, "Lax")
+
+            if c["name"] and c["value"] and c["domain"]:
+                cleaned.append(c)
+
+        self.context.add_cookies(cleaned)
+        logger.info("Loaded %d cookies from disk (sanitised from %d raw).", len(cleaned), len(raw_cookies))
 
     # ──────────────────────────────────────────
     # Feed Interaction (Watch / Like)
