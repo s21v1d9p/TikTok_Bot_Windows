@@ -1,0 +1,3 @@
+ipport: 83.228.226.35:3389
+login: Administrator
+pass: jx3lFAfr1TtffvnY7i1y
