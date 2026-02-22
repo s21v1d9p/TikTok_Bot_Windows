@@ -130,17 +130,20 @@ SELECTORS = {
 
     # POSITIVE logged-in indicators (check ANY of these)
     "logged_in_indicators": [
-        '[data-e2e="nav-profile"]',            # Profile icon in sidebar
-        '[data-e2e="profile-icon"]',           # Top-right profile icon
-        '[data-e2e="upload-icon"]',            # Upload icon
-        '[href="/upload"]',                    # Upload link
-        '[data-e2e="messages-icon"]',          # Messages icon (definitely logged in)
+        '[data-e2e="messages-icon"]',          # Messages icon (strongest — only visible when logged in)
+        '[data-e2e="inbox-icon"]',             # Inbox icon variant
+        '[data-e2e="profile-icon"]',           # Top-right profile avatar (not the sidebar link)
+        '[data-e2e="nav-profile"] img',        # Profile icon WITH avatar image (logged-in only)
+        '[data-e2e="upload-icon"]',            # Upload icon (data-e2e version, not href)
     ],
 
-    # NEGATIVE logged-out indicators
+    # NEGATIVE logged-out indicators (checked FIRST — if ANY match, user is NOT logged in)
     "logged_out_indicators": [
         '[data-e2e="login-button"]',           # Explicit login button
-        'button:has-text("Log in")',           # Text-based login button
+        'button:has-text("Log in")',           # Button with login text
+        'a:has-text("Log in")',                # Link with login text (TikTok sidebar)
+        ':has-text("Log in")[class*="login"]',  # Any element with login class+text
+        '[data-e2e="top-login-button"]',       # Top-right login button
     ],
 
     # ── Feed / For You Page ──

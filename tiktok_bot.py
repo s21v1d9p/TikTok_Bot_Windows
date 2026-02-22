@@ -758,8 +758,10 @@ class TikTokBot:
         if os.path.isfile(COOKIES_PATH):
             logger.info("No active session in Chrome profile, loading cookies from auth.json …")
             self._load_cookies()
+
+            # Full navigation (NOT reload) so cookies are sent with fresh request headers
             try:
-                self.page.reload(wait_until="domcontentloaded", timeout=60000)
+                self.page.goto(TIKTOK_BASE, wait_until="domcontentloaded", timeout=60000)
             except Exception:
                 pass
             random_sleep(*DELAY_MEDIUM)
@@ -768,12 +770,24 @@ class TikTokBot:
                 logger.info("Auto-login successful via auth.json cookies.")
                 return True
 
-            # Extra wait + retry
-            logger.info("First login check negative, waiting 5s and retrying …")
-            random_sleep(4.0, 6.0)
+            # Retry: navigate to tiktok.com/foryou (sometimes homepage redirects differently)
+            logger.info("First login check negative. Trying /foryou route …")
+            try:
+                self.page.goto(f"{TIKTOK_BASE}/foryou", wait_until="domcontentloaded", timeout=60000)
+            except Exception:
+                pass
+            random_sleep(5.0, 8.0)
 
             if self._check_logged_in():
-                logger.info("Auto-login successful on retry – session is valid.")
+                logger.info("Auto-login successful on retry via /foryou.")
+                return True
+
+            # Final retry with longer wait (cookies can be slow to propagate)
+            logger.info("Second login check negative, waiting 8s and retrying …")
+            random_sleep(6.0, 10.0)
+
+            if self._check_logged_in():
+                logger.info("Auto-login successful on final retry – session is valid.")
                 return True
 
         # Definitely not logged in
@@ -790,11 +804,31 @@ class TikTokBot:
     def _check_logged_in(self) -> bool:
         """Return True if positive logged-in indicators are found.
 
-        Checks for:
-        1. Negative indicators (Login button) -> returns False immediately.
-        2. Positive indicators (Profile/Upload icon) -> returns True.
+        Detection priority (strictest first):
+        1. JS text scan: if visible "Log in" text exists → NOT logged in.
+        2. CSS logged-out selectors → NOT logged in.
+        3. CSS logged-in selectors → logged in.
         """
-        # 1. Check for explicit "Log in" buttons
+        # ── 1. Strongest gate: JS check for visible "Log in" text ──
+        try:
+            has_login_text = self.page.evaluate("""() => {
+                // Look for visible elements whose text is "Log in" (exact or near-exact)
+                const els = document.querySelectorAll('a, button, div[role="button"]');
+                for (const el of els) {
+                    const text = (el.textContent || '').trim();
+                    if (text === 'Log in' && el.offsetParent !== null) {
+                        return true;
+                    }
+                }
+                return false;
+            }""")
+            if has_login_text:
+                logger.debug("Logged-out: JS detected visible 'Log in' element.")
+                return False
+        except Exception:
+            pass
+
+        # ── 2. CSS logged-out selectors ──
         for sel in SELECTORS["logged_out_indicators"]:
             try:
                 if element_exists(self.page, sel, timeout=800):
@@ -803,11 +837,11 @@ class TikTokBot:
             except Exception:
                 pass
 
-        # 2. Check for positive logged-in elements
+        # ── 3. CSS logged-in selectors ──
         for selector in SELECTORS["logged_in_indicators"]:
             try:
                 if element_exists(self.page, selector, timeout=1500):
-                    logger.debug("Logged-in indicator found: %s", selector)
+                    logger.info("Logged-in indicator found: %s", selector)
                     return True
             except Exception:
                 continue
